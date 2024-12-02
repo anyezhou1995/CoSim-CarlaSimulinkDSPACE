@@ -188,6 +188,7 @@ class AbstractEnv(gym.Env):
         self.done = False
         self.vehicle_speed = []
         self.vehicle_pos = []
+        self.vehicle_accel = []
         self._reset(num_CAV=num_CAV)
         self.define_spaces()  # Second, to link the obs and actions to the vehicles once the scene is created
         # set the vehicle id for visualizing
@@ -436,6 +437,117 @@ class AbstractEnv(gym.Env):
                             other.crashed = False
 
         return tuple(actions)
+    
+    def vsp(self, speed, accel):
+        return speed*(1.1*accel + 0.132) + 0.000302*speed**3
+    
+    def compare_policy(self, actions, actions1, time_steps):
+        env_copy = copy.deepcopy(self)
+        env_copy1 = copy.deepcopy(self)
+        decision, action_to_take = [], []
+
+        for i in range(len(actions)):
+            veh, veh1 = env_copy.controlled_vehicles[i], env_copy1.controlled_vehicles[i]
+            acc_record, acc_record1 = [], []
+            for _ in range(time_steps):
+                mdp_controller(veh, env_copy, actions[i])
+                acc_record.append(veh.action['acceleration']**2)
+                mdp_controller(veh1, env_copy1, actions1[i])
+                acc_record1.append(veh1.action['acceleration']**2)
+            if sum(acc_record)/len(acc_record) > sum(acc_record1)/len(acc_record1):
+                decision.append(1)
+                action_to_take.append(actions1[i])
+            else:
+                decision.append(0)
+                action_to_take.append(actions[i])
+        
+        return decision, action_to_take
+    
+    def compare_policy_reward(self, actions, actions1, time_steps=10):
+        env_copy = copy.deepcopy(self)
+        env_copy1 = copy.deepcopy(self)
+        decision, action_to_take = [], []
+
+        for i in range(len(actions)):
+            veh, veh1 = env_copy.controlled_vehicles[i], env_copy1.controlled_vehicles[i]
+            reward_record, reward_record1 = [], []
+            for _ in range(time_steps):
+                mdp_controller(veh, env_copy, actions[i])
+                reward_record.append(env_copy._agent_reward(actions[i], veh, env_copy.old_accel[i]))
+                mdp_controller(veh1, env_copy1, actions1[i])
+                reward_record1.append(env_copy1._agent_reward(actions1[i], veh1, env_copy1.old_accel[i]))
+            if sum(reward_record)/len(reward_record) < sum(reward_record1)/len(reward_record1):
+                decision.append(1)
+                action_to_take.append(actions1[i])
+            else:
+                decision.append(0)
+                action_to_take.append(actions[i])
+        
+        return decision, action_to_take
+    
+    '''
+    def share_policy(self, actions, actions1, coeff):
+        ## Potential function based on spacing to the merging point
+        def EO(s, ko=5):
+            return ko/np.linalg.norm(s)
+
+        ## Risk coeff
+        def DR(D, D_dot, Cd=1, Dmax=1):
+            wd = 0.5
+            wc = 0.5
+            s = wd*D + wc*D_dot
+            if s <= Cd:
+                return s/Dmax
+            else:
+                return 1
+
+        ## Intervention based on personal costs based on vsp and accel/decel
+        def ID(vsp1, vsp2, u1, u2, ID_MAX=1):
+            ws = 1/5
+            wp = 1/5
+            return (ws*np.linalg.norm(vsp1-vsp2)/200+wp**np.linalg.norm(u1-u2))/ID_MAX
+
+        ## Control allocation
+        def allocation(DR, ID):
+            K_dr = 0.5
+            K_id = 0.1/2
+            c1 = 0.1
+            c2 = 1
+            s = np.exp(- K_dr*(DR-1)**2 - K_id*ID**2)
+            if s<=c1:
+                h = 0
+            elif s>c1 and s<=c2:
+                h = ((s-c1)/(c2-c1))**2 - ((s-c1)/(c2-c1))**3
+            else:
+                h = 1
+            return 1 - h
+
+        shared_actions = []
+        env_copy = copy.deepcopy(self)
+        env_copy1 = copy.deepcopy(self)
+        for i in range(len(actions)):
+            veh, veh1 = env_copy.controlled_vehicles[i], env_copy1.controlled_vehicles[i]
+            acc_record, acc_record1 = [], []
+            vsp_record, vsp_record1 = [], []
+            for _ in range(7):
+                mdp_controller(veh, env_copy, actions[i])
+                acc_record.append(veh.action['acceleration']**2)
+                vsp_record.append(self.vsp(veh.speed, veh.action['acceleration']))
+                mdp_controller(veh1, env_copy1, actions1[i])
+                acc_record1.append(veh1.action['acceleration']**2)
+                vsp_record1.append(self.vsp(veh1.speed, veh1.action['acceleration']))
+
+            ir = ID(np.array(vsp_record), np.array(vsp_record1), np.array(acc_record), np.array(acc_record1))
+            dis_to_merge = self.distance_to_merging_end(self.controlled_vehicles[i])
+            D = EO(dis_to_merge)
+            D_dot = self.controlled_vehicles[i].speed
+            dr = DR(D, D_dot, 1)
+            lamba = coeff*allocation(dr, ir)
+
+            shared_actions.append(lamba*actions[i]+(1-lamba)*actions1[i])
+
+        return shared_actions
+    '''
 
     def step(self, action: Action) -> Tuple[Observation, float, bool, dict]:
         """
@@ -480,6 +592,8 @@ class AbstractEnv(gym.Env):
 
         self.vehicle_speed.append([v.speed for v in self.controlled_vehicles])
         self.vehicle_pos.append(([v.position[0] for v in self.controlled_vehicles]))
+        self.vehicle_accel.append(([v.action['acceleration'] for v in self.controlled_vehicles]))
+        self.old_accel = [v.action['acceleration'] for v in self.controlled_vehicles]
         info = {
             "speed": self.vehicle.speed,
             "crashed": self.vehicle.crashed,
@@ -488,7 +602,84 @@ class AbstractEnv(gym.Env):
             "action_mask": np.array(available_actions),
             "average_speed": average_speed,
             "vehicle_speed": np.array(self.vehicle_speed),
-            "vehicle_position": np.array(self.vehicle_pos)
+            "vehicle_position": np.array(self.vehicle_pos),
+            "vehicle_acceleration": np.array(self.vehicle_accel)
+        }
+
+        # if terminal:
+        #     # print("steps, action, new_action: ", self.steps, action, self.new_action)
+        #     print(self.steps)
+
+        try:
+            info["cost"] = self._cost(action)
+        except NotImplementedError:
+            pass
+
+        # print(self.steps)
+        return obs, reward, terminal, info
+    
+    def step_dual(self, action: Action, action1: Action) -> Tuple[Observation, float, bool, dict]:
+        """
+        Perform an action and step the environment dynamics.
+
+        The action is executed by the ego-vehicle, and all other vehicles on the road performs their default behaviour
+        for several simulation timesteps until the next decision making step.
+
+        :param action: the action performed by the ego-vehicle
+        :return: a tuple (observation, reward, terminal, info)
+        """
+        average_speed = 0
+        if self.road is None or self.vehicle is None:
+            raise NotImplementedError("The road and vehicle must be initialized in the environment implementation")
+
+        self.steps += 1
+        if self.config["safety_guarantee"]:
+            self.new_action = self.safety_supervisor(action)
+            self.new_action1 = self.safety_supervisor(action1)
+        else:
+            self.new_action = action
+            self.new_action1 = action1
+
+        #decision, action_to_take = self.compare_policy(self.new_action, self.new_action1, 5)
+        decision, action_to_take = self.compare_policy_reward(self.new_action, self.new_action1)
+        self.new_action = action_to_take
+
+        # action is a tuple, e.g., (2, 3, 0, 1)
+        self._simulate(self.new_action)
+
+        obs = self.observation_type.observe()
+        reward = self._reward(action)
+        terminal = self._is_terminal()
+
+        # get action masks
+        if self.config["action_masking"]:
+            available_actions = [[0] * self.n_a] * len(self.controlled_vehicles)
+            for i in range(len(self.controlled_vehicles)):
+                available_action = self._get_available_actions(self.controlled_vehicles[i], self)
+                for a in available_action:
+                    available_actions[i][a] = 1
+        else:
+            available_actions = [[1] * self.n_a] * len(self.controlled_vehicles)
+
+        for v in self.controlled_vehicles:
+            average_speed += v.speed
+        average_speed = average_speed / len(self.controlled_vehicles)
+
+        self.vehicle_speed.append([v.speed for v in self.controlled_vehicles])
+        self.vehicle_pos.append(([v.position[0] for v in self.controlled_vehicles]))
+        self.vehicle_accel.append(([v.action['acceleration'] for v in self.controlled_vehicles]))
+        info = {
+            "speed": self.vehicle.speed,
+            "crashed": self.vehicle.crashed,
+            "action": action,
+            "new_action": self.new_action,
+            "action_mask": np.array(available_actions),
+            "average_speed": average_speed,
+            "vehicle_speed": np.array(self.vehicle_speed),
+            "vehicle_position": np.array(self.vehicle_pos),
+            "vehicle_acceleration": np.array(self.vehicle_accel),
+            "decision": decision,
+            "gt_action": action_to_take
         }
 
         # if terminal:
@@ -611,7 +802,7 @@ class AbstractEnv(gym.Env):
             distance_to_end = sum(self.ends[:3]) - vehicle.position[0]
         return distance_to_end
 
-    def _compute_headway_distance(self, vehicle, ):
+    def _compute_headway_distance(self, vehicle):
         headway_distance = 60
         for v in self.road.vehicles:
             if (v.lane_index == vehicle.lane_index) and (v.position[0] > vehicle.position[0]):

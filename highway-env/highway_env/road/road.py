@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import logging
+import random
 from typing import List, Tuple, Dict, TYPE_CHECKING, Optional
 
 from highway_env.road.lane import LineType, StraightLane, AbstractLane
@@ -92,7 +93,7 @@ class RoadNetwork(object):
         # Randomly pick next road
         if not next_to:
             try:
-                next_to = list(self.graph[_to].keys())[np_random.randint(len(self.graph[_to]))]
+                next_to = list(self.graph[_to].keys())[random.randint(0,len(self.graph[_to])-1)]
             except KeyError:
                 # logger.warning("End of lane reached.")
                 return current_index

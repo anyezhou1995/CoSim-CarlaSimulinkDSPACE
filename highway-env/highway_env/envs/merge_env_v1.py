@@ -51,16 +51,18 @@ class MergeEnv(AbstractEnv):
             "HEADWAY_COST": 4,  # default=1
             "HEADWAY_TIME": 1.2,  # default=1.2[s]
             "MERGING_LANE_COST": 4,  # default=4
+            "ENERGY_COST": 1.5,  # default=1
+            "jerk_cost": 1.5,
             "traffic_density": 1,  # easy or hard modes
         })
         return config
 
     def _reward(self, action: int) -> float:
         # Cooperative multi-agent reward
-        return sum(self._agent_reward(action, vehicle) for vehicle in self.controlled_vehicles) \
+        return sum(self._agent_reward(action, vehicle, old_acc) for vehicle, old_acc in zip(self.controlled_vehicles, self.old_accel)) \
                / len(self.controlled_vehicles)
 
-    def _agent_reward(self, action: int, vehicle: Vehicle) -> float:
+    def _agent_reward(self, action: int, vehicle: Vehicle, old_accel) -> float:
         """
             The vehicle is rewarded for driving with high speed on lanes to the right and avoiding collisions
             But an additional altruistic penalty is also suffered if any vehicle on the merging lane has a low speed.
@@ -78,13 +80,22 @@ class MergeEnv(AbstractEnv):
 
         # compute headway cost
         headway_distance = self._compute_headway_distance(vehicle)
+        #desired_headway = 0.003*vehicle.speed + 0.05*vehicle.speed**2
         Headway_cost = np.log(
             headway_distance / (self.config["HEADWAY_TIME"] * vehicle.speed)) if vehicle.speed > 0 else 0
+        #Headway_cost = np.log(headway_distance/desired_headway) if vehicle.speed>0 else 0
+
+        jerk_cost = -abs(vehicle.action["acceleration"] - old_accel)/60
         # compute overall reward
         reward = self.config["COLLISION_REWARD"] * (-1 * vehicle.crashed) \
                  + (self.config["HIGH_SPEED_REWARD"] * np.clip(scaled_speed, 0, 1)) \
                  + self.config["MERGING_LANE_COST"] * Merging_lane_cost \
-                 + self.config["HEADWAY_COST"] * (Headway_cost if Headway_cost < 0 else 0)
+                 + self.config["HEADWAY_COST"] * (Headway_cost if Headway_cost < 0 else 0) \
+                 + self.config["jerk_cost"] * jerk_cost \
+                 - self.config["ENERGY_COST"] * max(0, super().vsp(vehicle.speed, vehicle.action["acceleration"])/250)
+                 #+ self.config["ENERGY_COST"] * (1 - min(1, max(0, super().vsp(vehicle.speed, vehicle.action["acceleration"])/200)))
+
+        #print('Fuel: ', (1 - min(1, max(0, super().vsp(vehicle.speed, vehicle.action["acceleration"])/200))), 'Jerk: ', jerk_cost)
         return reward
 
     def _regional_reward(self):
@@ -116,11 +127,75 @@ class MergeEnv(AbstractEnv):
                     v_fl, v_rl = self.road.surrounding_vehicles(vehicle, ("a", "b", 0))
                 else:
                     v_fl, v_rl = None, None
+            
             for v in [v_fl, v_fr, vehicle, v_rl, v_rr]:
+            #for v in [vehicle]:
                 if type(v) is MDPVehicle and v is not None:
                     neighbor_vehicle.append(v)
             regional_reward = sum(v.local_reward for v in neighbor_vehicle)
             vehicle.regional_reward = regional_reward / sum(1 for _ in filter(None.__ne__, neighbor_vehicle))
+            vehicle.single_reward = vehicle.local_reward
+            
+    def _regional_reward_weights(self):
+        for vehicle in self.controlled_vehicles:
+            neighbor_vehicle = []
+
+            # vehicle is on the main road
+            if vehicle.lane_index == ("a", "b", 0) or vehicle.lane_index == ("b", "c", 0) or vehicle.lane_index == (
+                    "c", "d", 0):
+                v_fl, v_rl = self.road.surrounding_vehicles(vehicle)
+                if len(self.road.network.side_lanes(vehicle.lane_index)) != 0:
+                    v_fr, v_rr = self.road.surrounding_vehicles(vehicle,
+                                                                self.road.network.side_lanes(
+                                                                    vehicle.lane_index)[0])
+                # assume we can observe the ramp on this road
+                elif vehicle.lane_index == ("a", "b", 0) and vehicle.position[0] > self.ends[0]:
+                    v_fr, v_rr = self.road.surrounding_vehicles(vehicle, ("k", "b", 0))
+                else:
+                    v_fr, v_rr = None, None
+            else:
+                # vehicle is on the ramp
+                v_fr, v_rr = self.road.surrounding_vehicles(vehicle)
+                if len(self.road.network.side_lanes(vehicle.lane_index)) != 0:
+                    v_fl, v_rl = self.road.surrounding_vehicles(vehicle,
+                                                                self.road.network.side_lanes(
+                                                                    vehicle.lane_index)[0])
+                # assume we can observe the straight road on the ramp
+                elif vehicle.lane_index == ("k", "b", 0):
+                    v_fl, v_rl = self.road.surrounding_vehicles(vehicle, ("a", "b", 0))
+                else:
+                    v_fl, v_rl = None, None
+            
+            ############################## regional or global #########################################
+            for v in [v_fl, v_fr, vehicle, v_rl, v_rr]:
+            #for v in self.controlled_vehicles:
+                if type(v) is MDPVehicle and v is not None:
+                    neighbor_vehicle.append(v)
+            
+            regional_reward, weight_total = 0, 0
+            for v in neighbor_vehicle:
+                if v.id == vehicle.id:
+                    weight_total += 1
+                else:
+                    dis = np.sqrt((vehicle.position[0]-v.position[0])**2 + (vehicle.position[1]-v.position[1])**2)
+                    weight_total += min(1/dis, 1)
+                    # all equal case
+                    #weight_total += 1
+
+            for v in neighbor_vehicle:
+                if v.id == vehicle.id:
+                    regional_reward += v.local_reward/weight_total
+                else:
+                    dis = np.sqrt((vehicle.position[0]-v.position[0])**2 + (vehicle.position[1]-v.position[1])**2)
+                    #print(vehicle, v, dis)
+                    regional_reward += min(1/dis, 1)*v.local_reward/weight_total
+                    
+                    # all equal case
+                    #regional_reward += 1*v.local_reward/weight_total
+
+            #regional_reward = sum(v.local_reward for v in neighbor_vehicle)
+            #vehicle.regional_reward = regional_reward / sum(1 for _ in filter(None.__ne__, neighbor_vehicle))
+            vehicle.regional_reward = regional_reward
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, dict]:
         agent_info = []
@@ -130,12 +205,34 @@ class MergeEnv(AbstractEnv):
             agent_info.append([v.position[0], v.position[1], v.speed])
         info["agents_info"] = agent_info
 
-        for vehicle in self.controlled_vehicles:
-            vehicle.local_reward = self._agent_reward(action, vehicle)
+        for vehicle, old_acc in zip(self.controlled_vehicles, self.old_accel):
+            vehicle.local_reward = self._agent_reward(action, vehicle, old_acc)
         # local reward
         info["agents_rewards"] = tuple(vehicle.local_reward for vehicle in self.controlled_vehicles)
         # regional reward
         self._regional_reward()
+        #self._regional_reward_weights()
+        info["regional_rewards"] = tuple(vehicle.regional_reward for vehicle in self.controlled_vehicles)
+        info["single_rewards"] = tuple(vehicle.single_reward for vehicle in self.controlled_vehicles)
+
+        obs = np.asarray(obs).reshape((len(obs), -1))
+        return obs, reward, done, info
+    
+    def step_mixed(self, action, action1) -> Tuple[np.ndarray, float, bool, dict]:
+        agent_info = []
+        obs, reward, done, info = super().step_dual(action, action1)
+        info["agents_dones"] = tuple(self._agent_is_terminal(vehicle) for vehicle in self.controlled_vehicles)
+        for v in self.controlled_vehicles:
+            agent_info.append([v.position[0], v.position[1], v.speed])
+        info["agents_info"] = agent_info
+
+        for vehicle, old_acc in zip(self.controlled_vehicles, self.old_accel):
+            vehicle.local_reward = self._agent_reward(action, vehicle, old_acc)
+        # local reward
+        info["agents_rewards"] = tuple(vehicle.local_reward for vehicle in self.controlled_vehicles)
+        # regional reward
+        self._regional_reward()
+        #self._regional_reward_weights()
         info["regional_rewards"] = tuple(vehicle.regional_reward for vehicle in self.controlled_vehicles)
 
         obs = np.asarray(obs).reshape((len(obs), -1))
@@ -177,9 +274,19 @@ class MergeEnv(AbstractEnv):
             else:
                 num_CAV = num_CAV
             num_HDV = np.random.choice(np.arange(3, 6), 1)[0]
+        elif self.config["traffic_density"] == 4:
+            # 3 to 7 CAVs
+            num_HDV = 0
+            num_CAV = 6 #np.random.choice(np.arange(3, 8), 1)[0]
+        elif self.config["traffic_density"] == 5:
+            # 6 to 10 CAVs
+            num_HDV = 0
+            num_CAV = 11 #np.random.choice(np.arange(6, 11), 1)[0]
         self._make_vehicles(num_CAV, num_HDV)
         self.action_is_safe = True
         self.T = int(self.config["duration"] * self.config["policy_frequency"])
+
+        self.old_accel = [0 for _ in self.controlled_vehicles]
 
     def _make_road(self, ) -> None:
         """
@@ -218,8 +325,13 @@ class MergeEnv(AbstractEnv):
         other_vehicles_type = utils.class_from_path(self.config["other_vehicles_type"])
         self.controlled_vehicles = []
 
-        spawn_points_s = [10, 50, 90, 130, 170, 210]
-        spawn_points_m = [5, 45, 85, 125, 165, 205]
+        #spawn_points_s = [10, 50, 90, 130, 170, 210]
+        #spawn_points_m = [5, 45, 85, 125, 165, 205]
+
+        hdw, spd = 1.45, 25
+        spacing = hdw*spd
+        spawn_points_s = [19+spacing*i for i in range(5)]
+        spawn_points_m = [25+spacing*i for i in range(5)]
 
         """Spawn points for CAV"""
         # spawn point indexes on the straight road
@@ -234,6 +346,8 @@ class MergeEnv(AbstractEnv):
             spawn_points_s.remove(a)
         for b in spawn_point_m_c:
             spawn_points_m.remove(b)
+
+        #print(spawn_points_s, spawn_points_m)
 
         """Spawn points for HDV"""
         # spawn point indexes on the straight road

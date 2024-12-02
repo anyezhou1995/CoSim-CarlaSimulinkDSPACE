@@ -48,6 +48,7 @@ class Vehicle(object):
         self.trajectories = []
         self.crashed = False
         self.log = []
+        self.single_reward = 0
         self.local_reward = 0
         self.regional_reward = 0
         self.history = deque(maxlen=30)

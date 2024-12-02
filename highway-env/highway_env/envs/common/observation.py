@@ -2,6 +2,8 @@ from typing import List, Dict, TYPE_CHECKING, Optional, Union
 from gym import spaces
 import gym
 gym.logger.set_level(40)
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 import numpy as np
 import pandas as pd
 
