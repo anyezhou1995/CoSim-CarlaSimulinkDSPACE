@@ -1,6 +1,6 @@
 # Deep Multi-agent Reinforcement Learning for Highway On-Ramp Merging in Mixed Traffic
 
-## Please Cite
+## Please cite
 ```
 @article{chen2023deep,
   title={Deep multi-agent reinforcement learning for highway on-ramp merging in mixed traffic},
