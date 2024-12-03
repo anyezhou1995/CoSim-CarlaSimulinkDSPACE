@@ -1,7 +1,8 @@
 name: marl_cav
 channels:
   - pytorch
-  - intel
+  - conda-forge
+  - https://software.repos.intel.com/python/conda/
   - defaults
 dependencies:
   - _libgcc_mutex=0.1=main
@@ -11,7 +12,7 @@ dependencies:
   - ca-certificates=2024.3.11=h06a4308_0
   - cmake=3.26.4=h96355d8_0
   - expat=2.6.2=h6a678d5_0
-  - intel-openmp=2024.1.2=intel_995
+  - intel-openmp=2024.1.2
   - krb5=1.20.1=h143b758_1
   - ld_impl_linux-64=2.38=h1181459_1
   - libcurl=8.7.1=h251f7ec_0
@@ -27,8 +28,8 @@ dependencies:
   - lz4-c=1.9.4=h6a678d5_1
   - magma-cuda121=2.6.1=1
   - magma-cuda124=2.6.1=1
-  - mkl-include=2024.1.0=intel_691
-  - mkl-static=2024.1.0=intel_691
+  - mkl-include=2024.1.0
+  - mkl-static=2024.1.0
   - ncurses=6.4=h6a678d5_0
   - ninja-base=1.10.2=hd09550d_5
   - openssl=3.0.13=h7f8727e_2
@@ -95,16 +96,16 @@ dependencies:
       - pygame==2.5.2
       - pyparsing==3.1.2
       - python-dateutil==2.9.0.post0
-      - pytorch-triton==3.0.0+45fff310c8
+      - pytorch-triton
       - pytz==2024.1
       - pyyaml==6.0.1
       - requests==2.32.3
       - six==1.16.0
       - sortedcontainers==2.4.0
       - sympy==1.12.1
-      - torch==2.4.0.dev20240607+cu124
-      - torchaudio==2.4.0.dev20240607+cu124
-      - torchvision==0.19.0.dev20240607+cu124
+      - torch
+      - torchaudio
+      - torchvision
       - types-dataclasses==0.6.6
       - typing-extensions==4.12.2
       - tzdata==2024.1
